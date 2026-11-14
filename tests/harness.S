@@ -1,0 +1,62 @@
+#include "hv_asm.h"
+// Running a test program natively with every register taken from a HvCpu.
+//
+// hv_native_run(HvCpu *cpu, void *entry) saves the host state and jumps to a
+// program's native entry (its PROLOGUE), which loads all guest registers from
+// the HvCpu, x28 last. The program's EPILOGUE needs a base register without
+// one to spare, so it pushes x0/x1 onto the guest stack, loads the HvCpu
+// pointer from a global, saves everything, and comes back to hv_native_return.
+
+    .text
+    .p2align 2
+    .globl SYM(hv_native_run)
+    .globl SYM(hv_native_return)
+    .globl SYM(hv_native_cpu)
+
+SYM(hv_native_run):
+    stp x29, x30, [sp, #-176]!
+    str x18, [sp, #160]         // the platform register (Android: shadow call stack); programs clobber it
+    stp x19, x20, [sp, #16]
+    stp x21, x22, [sp, #32]
+    stp x23, x24, [sp, #48]
+    stp x25, x26, [sp, #64]
+    stp x27, x28, [sp, #80]
+    stp d8, d9, [sp, #96]
+    stp d10, d11, [sp, #112]
+    stp d12, d13, [sp, #128]
+    stp d14, d15, [sp, #144]
+    adrp x9, PAGE(hv_native_cpu)
+    add x9, x9, PAGEOFF(hv_native_cpu)
+    str x0, [x9]
+    mov x10, sp
+    str x10, [x9, #8]
+    mov x28, x0
+    br x1
+
+SYM(hv_native_return):
+    adrp x9, PAGE(hv_native_cpu)
+    add x9, x9, PAGEOFF(hv_native_cpu)
+    ldr x10, [x9, #8]
+    mov sp, x10
+    ldp d14, d15, [sp, #144]
+    ldp d12, d13, [sp, #128]
+    ldp d10, d11, [sp, #112]
+    ldp d8, d9, [sp, #96]
+    ldp x27, x28, [sp, #80]
+    ldp x25, x26, [sp, #64]
+    ldp x23, x24, [sp, #48]
+    ldp x21, x22, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldr x18, [sp, #160]
+    ldp x29, x30, [sp], #176
+    ret
+
+    .data
+    .p2align 3
+SYM(hv_native_cpu):
+    .quad 0     // HvCpu *
+    .quad 0     // host SP
+
+#if !defined(__APPLE__)
+    .section .note.GNU-stack,"",%progbits
+#endif

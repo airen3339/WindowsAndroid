@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WindowsAndroid</string>
+    <string name="channel_vm">Running virtual machine</string>
+    <string name="notif_title">Windows is running</string>
+    <string name="notif_text">Tap to return to Windows</string>
+    <string name="notif_install_title">Installing Windows</string>
+    <string name="notif_install_text">Keep WindowsAndroid open until the Windows desktop appears. In the background, Android slows it down a lot.</string>
+    <string name="shut_down">Shut down</string>
+    <string name="force_stop">Force stop</string>
+    <string name="channel_links">Links from Windows</string>
+    <string name="link_title">Windows wants to open a link</string>
+</resources>

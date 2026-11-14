@@ -1,0 +1,183 @@
+diff --git a/OvmfPkg/QemuRamfbDxe/QemuRamfb.c b/OvmfPkg/QemuRamfbDxe/QemuRamfb.c
+index 5a1044f..7739f62 100644
+--- a/OvmfPkg/QemuRamfbDxe/QemuRamfb.c
++++ b/OvmfPkg/QemuRamfbDxe/QemuRamfb.c
+@@ -16,6 +16,7 @@
+ #include <Library/DevicePathLib.h>
+ #include <Library/FrameBufferBltLib.h>
+ #include <Library/MemoryAllocationLib.h>
++#include <Library/PcdLib.h>
+ #include <Library/UefiBootServicesTableLib.h>
+ #include <Library/QemuFwCfgLib.h>
+ 
+@@ -24,6 +25,16 @@
+ #define RAMFB_FORMAT  0x34325258 /* DRM_FORMAT_XRGB8888 */
+ #define RAMFB_BPP     4
+ 
++//
++// Optional fw_cfg file holding the host's preferred display size as ASCII
++// "<width>x<height>" (e.g. "1920x1080"). When present, that size is offered as
++// an extra mode and made the initial one, so the console and the OS loader
++// (which keeps the boot-time GOP mode) run at the host display's resolution.
++//
++#define RAMFB_RESOLUTION_FWCFG  "opt/org.windowsandroid/ramfb-resolution"
++#define RAMFB_MAX_WIDTH         7680
++#define RAMFB_MAX_HEIGHT        4320
++
+ #pragma pack (1)
+ typedef struct RAMFB_CONFIG {
+   UINT64    Address;
+@@ -54,11 +65,15 @@ STATIC EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  mQemuRamfbModeInfo[] = {
+     0,    // Version
+     1024, // HorizontalResolution
+     768,  // VerticalResolution
++  },{
++    0,    // Version
++    0,    // HorizontalResolution: from RAMFB_RESOLUTION_FWCFG, if any
++    0,    // VerticalResolution
+   }
+ };
+ 
+ STATIC EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE  mQemuRamfbMode = {
+-  ARRAY_SIZE (mQemuRamfbModeInfo),                // MaxMode
++  ARRAY_SIZE (mQemuRamfbModeInfo) - 1,            // MaxMode
+   0,                                              // Mode
+   mQemuRamfbModeInfo,                             // Info
+   sizeof (EFI_GRAPHICS_OUTPUT_MODE_INFORMATION),  // SizeOfInfo
+@@ -234,6 +249,79 @@ STATIC EFI_GRAPHICS_OUTPUT_PROTOCOL  mQemuRamfbGraphicsOutput = {
+   &mQemuRamfbMode,
+ };
+ 
++/**
++  Read the host's preferred resolution from fw_cfg and offer it as a mode.
++
++  @return  The mode to start in: the preferred one, or 800 x 600 without one.
++**/
++STATIC
++UINT32
++QemuRamfbHostResolutionMode (
++  VOID
++  )
++{
++  FIRMWARE_CONFIG_ITEM  Item;
++  UINTN                 Size;
++  CHAR8                 Text[32];
++  CHAR8                 *End;
++  UINTN                 Width;
++  UINTN                 Height;
++  UINT32                Index;
++  RETURN_STATUS         Status;
++
++  Status = QemuFwCfgFindFile (RAMFB_RESOLUTION_FWCFG, &Item, &Size);
++  if (RETURN_ERROR (Status) || (Size == 0) || (Size >= sizeof (Text))) {
++    return 1;
++  }
++
++  QemuFwCfgSelectItem (Item);
++  QemuFwCfgReadBytes (Size, Text);
++  Text[Size] = '\0';
++
++  Status = AsciiStrDecimalToUintnS (Text, &End, &Width);
++  if (RETURN_ERROR (Status) || ((*End != 'x') && (*End != 'X'))) {
++    return 1;
++  }
++
++  Status = AsciiStrDecimalToUintnS (End + 1, &End, &Height);
++  if (RETURN_ERROR (Status) ||
++      (Width < 640) || (Height < 480) ||
++      (Width > RAMFB_MAX_WIDTH) || (Height > RAMFB_MAX_HEIGHT))
++  {
++    DEBUG ((DEBUG_WARN, "Ramfb: ignoring host resolution \"%a\"\n", Text));
++    return 1;
++  }
++
++  for (Index = 0; Index < mQemuRamfbMode.MaxMode; Index++) {
++    if ((mQemuRamfbModeInfo[Index].HorizontalResolution == Width) &&
++        (mQemuRamfbModeInfo[Index].VerticalResolution == Height))
++    {
++      break;
++    }
++  }
++
++  if (Index == mQemuRamfbMode.MaxMode) {
++    mQemuRamfbModeInfo[Index].HorizontalResolution = (UINT32)Width;
++    mQemuRamfbModeInfo[Index].VerticalResolution   = (UINT32)Height;
++    mQemuRamfbMode.MaxMode++;
++  }
++
++  //
++  // GraphicsConsoleDxe switches to the mode these name; keep a resolution
++  // the user picked in the platform setup form (source 1) if there is one.
++  //
++  if (PcdGet8 (PcdVideoResolutionSource) == 0) {
++    PcdSet32S (PcdVideoHorizontalResolution, (UINT32)Width);
++    PcdSet32S (PcdSetupVideoHorizontalResolution, (UINT32)Width);
++    PcdSet32S (PcdVideoVerticalResolution, (UINT32)Height);
++    PcdSet32S (PcdSetupVideoVerticalResolution, (UINT32)Height);
++    PcdSet8S (PcdVideoResolutionSource, 2);
++  }
++
++  DEBUG ((DEBUG_INFO, "Ramfb: host resolution %ux%u (mode %u)\n", (UINT32)Width, (UINT32)Height, Index));
++  return Index;
++}
++
+ EFI_STATUS
+ EFIAPI
+ InitializeQemuRamfb (
+@@ -251,6 +339,7 @@ InitializeQemuRamfb (
+   UINTN                     FbSize, MaxFbSize, Pages;
+   UINTN                     FwCfgSize;
+   UINTN                     Index;
++  UINT32                    InitialMode;
+ 
+   if (!QemuFwCfgIsAvailable ()) {
+     DEBUG ((DEBUG_INFO, "Ramfb: no FwCfg\n"));
+@@ -272,8 +361,10 @@ InitializeQemuRamfb (
+     return EFI_PROTOCOL_ERROR;
+   }
+ 
++  InitialMode = QemuRamfbHostResolutionMode ();
++
+   MaxFbSize = 0;
+-  for (Index = 0; Index < ARRAY_SIZE (mQemuRamfbModeInfo); Index++) {
++  for (Index = 0; Index < mQemuRamfbMode.MaxMode; Index++) {
+     mQemuRamfbModeInfo[Index].PixelsPerScanLine =
+       mQemuRamfbModeInfo[Index].HorizontalResolution;
+     mQemuRamfbModeInfo[Index].PixelFormat =
+@@ -314,9 +405,9 @@ InitializeQemuRamfb (
+   mQemuRamfbMode.FrameBufferBase = FbBase;
+ 
+   //
+-  // 800 x 600
++  // 800 x 600, or the host's resolution
+   //
+-  QemuRamfbGraphicsOutputSetMode (&mQemuRamfbGraphicsOutput, 1);
++  QemuRamfbGraphicsOutputSetMode (&mQemuRamfbGraphicsOutput, InitialMode);
+ 
+   //
+   // ramfb vendor devpath
+diff --git a/OvmfPkg/QemuRamfbDxe/QemuRamfbDxe.inf b/OvmfPkg/QemuRamfbDxe/QemuRamfbDxe.inf
+index e3890b8..f7d8039 100644
+--- a/OvmfPkg/QemuRamfbDxe/QemuRamfbDxe.inf
++++ b/OvmfPkg/QemuRamfbDxe/QemuRamfbDxe.inf
+@@ -32,6 +32,7 @@
+   DevicePathLib
+   FrameBufferBltLib
+   MemoryAllocationLib
++  PcdLib
+   UefiBootServicesTableLib
+   UefiDriverEntryPoint
+   QemuFwCfgLib
+@@ -42,5 +43,12 @@
+ [Guids]
+   gQemuRamfbGuid
+ 
++[Pcd]
++  gUefiOvmfPkgTokenSpaceGuid.PcdVideoResolutionSource
++  gEfiMdeModulePkgTokenSpaceGuid.PcdVideoHorizontalResolution
++  gEfiMdeModulePkgTokenSpaceGuid.PcdVideoVerticalResolution
++  gEfiMdeModulePkgTokenSpaceGuid.PcdSetupVideoHorizontalResolution
++  gEfiMdeModulePkgTokenSpaceGuid.PcdSetupVideoVerticalResolution
++
+ [Depex]
+   TRUE

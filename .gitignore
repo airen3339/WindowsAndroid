@@ -1,0 +1,56 @@
+# Build outputs & dependency staging
+build/
+work/
+
+# App bundles & object archives
+*.ipa
+*.tipa
+*.app
+*.xcarchive
+*.o
+*.a
+*.dSYM/
+
+# Virtual machine disk images, firmware blobs, and installer payloads
+*.img
+*.hvsparse
+*.raw
+*.qcow2
+*.vhdx
+*.vhd
+*.vmdk
+*.esd
+*.wim
+*.swm
+*.iso
+*.fd
+# ...except the firmware built into the app (scripts/build_firmware.sh)
+!app/src/main/assets/firmware/QEMU_EFI.fd
+*.rom
+
+# Compiled Windows PE guest helpers & drivers
+*.exe
+*.dll
+*.sys
+*.pdb
+*.obj
+*.lib
+
+# Python & macOS metadata
+__pycache__/
+*.pyc
+.DS_Store
+
+# Android / Gradle
+.gradle/
+.kotlin/
+.idea/
+*.iml
+local.properties
+captures/
+.cxx/
+.externalNativeBuild/
+app/build/
+*.apk
+*.aab
+android-deps/
